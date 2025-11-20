@@ -45,7 +45,7 @@ const RealtimeVoiceChat: React.FC = () => {
   //http://148.230.104.35:4050
 
   useEffect(() => {
-    const socket = io("http://localhost:4050", {
+    const socket = io("http://148.230.104.35:4050", {
       transports: ["websocket"],
       query: {
         userId: "68d6eaf2e30a9a7097c6202c",
@@ -166,7 +166,7 @@ const RealtimeVoiceChat: React.FC = () => {
         color: "#fff",
       }}
     >
-      <h2>🎧 Realtime Voice Chat (PCM16)</h2>
+      <h2>🎧 Chat Bot</h2>
       <p>Status: {connected ? "🟢 Connected" : "🔴 Disconnected"}</p>
 
       <div
