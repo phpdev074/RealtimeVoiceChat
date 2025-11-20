@@ -1,22 +1,24 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { io } from "socket.io-client";
+import { io, Socket } from "socket.io-client";
 
 const SAMPLE_RATE = 24000;
 
 const RealtimeVoiceChat: React.FC = () => {
-  const [messages, setMessages] = useState<{ from: "user" | "bot"; text: string }[]>([]);
+  const [messages, setMessages] = useState<
+    { from: "user" | "bot"; text: string }[]
+  >([]);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
 
-  const socketRef = useRef<any>(null);
+  const socketRef = useRef<Socket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const queueRef = useRef<Float32Array[]>([]);
   const isPlayingRef = useRef(false);
-  const [conversationId, setConversationId] = useState(null)
 
-  // 🔊 Play queued PCM chunks using Web Audio API
+  // 🔊 Process PCM audio queue
   const playNextChunk = useCallback(async () => {
     if (isPlayingRef.current) return;
     if (!audioCtxRef.current || queueRef.current.length === 0) return;
@@ -29,21 +31,24 @@ const RealtimeVoiceChat: React.FC = () => {
       if (!chunk) continue;
 
       const buffer = ctx.createBuffer(1, chunk.length, SAMPLE_RATE);
-      buffer.copyToChannel(chunk, 0);
+
+      // FIX 1 — ensure proper Float32Array typing
+      buffer.copyToChannel(new Float32Array(chunk), 0);
+
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
 
       const duration = buffer.duration * 1000;
+
       source.start();
-      await new Promise((r) => setTimeout(r, duration));
+      await new Promise((res) => setTimeout(res, duration));
     }
 
     isPlayingRef.current = false;
   }, []);
 
-  //http://148.230.104.35:4050
-
+  // 🌐 Socket connection
   useEffect(() => {
     const socket = io("http://148.230.104.35:4050", {
       transports: ["websocket"],
@@ -51,36 +56,32 @@ const RealtimeVoiceChat: React.FC = () => {
         userId: "68d6eaf2e30a9a7097c6202c",
       },
     });
+
     socketRef.current = socket;
 
     const AudioContextClass =
       window.AudioContext || (window as any).webkitAudioContext;
     audioCtxRef.current = new AudioContextClass({ sampleRate: SAMPLE_RATE });
 
-    socket.on("connect", () => {
-      setConnected(true);
+    socket.on("connect", () => setConnected(true));
+
+    socket.on("userTranscript", (data: any) => {
+      setMessages((m) => [...m, { from: "user", text: data.transcript }]);
     });
 
-    socket.on("userTranscript", (d: any) =>
-      setMessages((m) => [...m, { from: "user", text: d.transcript, }])
-    );
-
-    // Temporary buffer to accumulate bot text
+    // Buffer bot text as it streams
     let botTextBuffer = "";
 
     socket.on("textChunk", (d: any) => {
-      // Append incoming chunk to buffer
       botTextBuffer += d.text;
 
-      setMessages((prevMessages) => {
-        const msgs = [...prevMessages];
+      setMessages((prev) => {
+        const msgs = [...prev];
         const last = msgs[msgs.length - 1];
 
-        // If last message is from bot, update it
         if (last?.from === "bot") {
           last.text = botTextBuffer;
         } else {
-          // Otherwise, push new message with current buffer
           msgs.push({ from: "bot", text: botTextBuffer });
         }
 
@@ -89,16 +90,14 @@ const RealtimeVoiceChat: React.FC = () => {
     });
 
     socket.on("responseDone", (data) => {
-      // const {conversationId,textBuffer}= data
       botTextBuffer = data.textBuffer;
-      setConversationId(data.conversationId)
+      setConversationId(data.conversationId);
     });
 
-    // 🎧 Handle PCM16 chunks
-    socket.on("audioChunk", ({ audio, format, sampleRate }) => {
+    // 🎧 Handle PCM16 → Float32 audio
+    socket.on("audioChunk", ({ audio, format }) => {
       if (format !== "pcm16") return;
 
-      // Decode base64 PCM16 → Float32
       const binary = atob(audio);
       const buffer = new ArrayBuffer(binary.length);
       const view = new Uint8Array(buffer);
@@ -106,23 +105,33 @@ const RealtimeVoiceChat: React.FC = () => {
 
       const pcm = new Int16Array(buffer);
       const float32 = new Float32Array(pcm.length);
-      for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 32768;
+      for (let i = 0; i < pcm.length; i++) {
+        float32[i] = pcm[i] / 32768;
+      }
 
-      queueRef.current.push(float32);
+      // FIX 1 — wrap in proper Float32Array
+      queueRef.current.push(new Float32Array(float32.buffer));
+
       playNextChunk();
     });
 
     socket.on("disconnect", () => setConnected(false));
 
-    return () => socket.disconnect();
+    // FIX 2 — proper React cleanup
+    return () => {
+      socket.disconnect();
+      return undefined;
+    };
   }, [playNextChunk]);
 
   // 🎙️ Voice recording
   const startRecording = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
     const rec = new MediaRecorder(stream, {
       mimeType: "audio/webm;codecs=opus",
     });
+
     mediaRecorderRef.current = rec;
 
     rec.ondataavailable = (e) => {
@@ -145,14 +154,15 @@ const RealtimeVoiceChat: React.FC = () => {
     setRecording(false);
   };
 
-  // 💬 Send message
   const sendMessage = () => {
     if (!input.trim()) return;
+
     socketRef.current?.emit("sendText", {
       userId: "68d6eaf2e30a9a7097c6202c",
       text: input,
-      conversationId
+      conversationId,
     });
+
     setMessages((m) => [...m, { from: "user", text: input }]);
     setInput("");
   };
@@ -200,6 +210,7 @@ const RealtimeVoiceChat: React.FC = () => {
         >
           {recording ? "🛑 Stop" : "🎙️ Record"}
         </button>
+
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -207,6 +218,7 @@ const RealtimeVoiceChat: React.FC = () => {
           placeholder="Type message..."
           style={{ flex: 1, padding: 6 }}
         />
+
         <button onClick={sendMessage} disabled={!connected}>
           Send
         </button>
