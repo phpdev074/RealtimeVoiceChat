@@ -53,7 +53,7 @@ const RealtimeVoiceChat: React.FC = () => {
     const socket = io("http://148.230.104.35:4050", {
       transports: ["websocket"],
       query: {
-        userId: "68d6eaf2e30a9a7097c6202c",
+        userId: "69204655d447e593e9107ab1",
       },
     });
 
